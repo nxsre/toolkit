@@ -14,7 +14,7 @@
 package cluster
 
 import (
-	"github.com/nxsre/cluster/pkg/clusterpb"
+	"github.com/nxsre/toolkit/pkg/clusterpb"
 	"sync"
 	"time"
 

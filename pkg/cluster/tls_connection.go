@@ -19,7 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/nxsre/cluster/pkg/clusterpb"
+	"github.com/nxsre/toolkit/pkg/clusterpb"
 	"io"
 	"net"
 	"sync"

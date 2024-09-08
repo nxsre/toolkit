@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/dgraph-io/ristretto"
 	"github.com/jessevdk/go-flags"
-	"github.com/nxsre/cluster/pkg/clusterpb"
+	"github.com/nxsre/toolkit/pkg/clusterpb"
 
 	//"github.com/dgraph-io/ristretto"
 	"github.com/eko/gocache/lib/v4/cache"
@@ -15,7 +15,7 @@ import (
 	"github.com/gogo/protobuf/proto"
 	"github.com/hashicorp/memberlist"
 	jsoniter "github.com/json-iterator/go"
-	"github.com/nxsre/cluster/pkg/cluster"
+	"github.com/nxsre/toolkit/pkg/cluster"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rosedblabs/wal"

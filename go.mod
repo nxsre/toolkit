@@ -1,4 +1,4 @@
-module github.com/nxsre/cluster
+module github.com/nxsre/toolkit
 
 go 1.22.5
 
