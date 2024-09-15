@@ -3,9 +3,13 @@ package k8sclient
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	goretry "github.com/avast/retry-go/v4"
 	"github.com/go-resty/resty/v2"
+	req "github.com/imroc/req/v3"
 	jsoniter "github.com/json-iterator/go"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
@@ -19,6 +23,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/transport"
 	"k8s.io/client-go/util/homedir"
+	"k8s.io/client-go/util/retry"
 	"log"
 	"net"
 	"net/url"
@@ -65,16 +70,38 @@ func SetPodAnnotation(pod *v1.Pod, key string, value string) error {
 	if err != nil {
 		return err
 	}
-	merge := update{}
-	merge.Metadata.Annotations = make(map[string]json.RawMessage)
-	merge.Metadata.Annotations[key] = json.RawMessage(`"` + value + `"`)
+	//merge := update{}
+	//merge.Metadata.Annotations = make(map[string]json.RawMessage)
+	//merge.Metadata.Annotations[key] = json.RawMessage(`"` + value + `"`)
+	//
+	//jsonData, err := json.Marshal(merge)
+	//if err != nil {
+	//	return err
+	//}
+	//_, err = cSet.CoreV1().Pods(pod.ObjectMeta.Namespace).Patch(context.TODO(), pod.ObjectMeta.Name, types.MergePatchType, jsonData, metav1.PatchOptions{})
 
-	jsonData, err := json.Marshal(merge)
-	if err != nil {
-		return err
+	// 资源冲突时重试
+	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if _, ok := pod.Annotations[key]; !ok || pod.Annotations[key] != value {
+			newPod, err := cSet.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			newPod.Annotations[key] = value
+			_, err = cSet.CoreV1().Pods(newPod.Namespace).Update(context.TODO(), newPod, metav1.UpdateOptions{})
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if retryErr != nil {
+		log.Println(retryErr.Error())
+		return retryErr
 	}
-	_, err = cSet.CoreV1().Pods(pod.ObjectMeta.Namespace).Patch(context.TODO(), pod.ObjectMeta.Name, types.MergePatchType, jsonData, metav1.PatchOptions{})
-	return err
+	return nil
 }
 
 // RefreshPod takes an existing Pod object as an input, and re-reads it from the K8s API
@@ -87,7 +114,7 @@ func RefreshPod(pod v1.Pod) (*v1.Pod, error) {
 	return cSet.CoreV1().Pods(pod.ObjectMeta.Namespace).Get(context.TODO(), pod.ObjectMeta.Name, metav1.GetOptions{})
 }
 
-func GetRunningContainer(pod *v1.Pod, containerName string) (*v1.ContainerStatus, error) {
+func GetRunningContainer(ctx context.Context, pod *v1.Pod, containerName string) (*v1.ContainerStatus, error) {
 	cSet, err := createClientSet()
 	if err != nil {
 		return nil, err
@@ -112,22 +139,28 @@ func GetRunningContainer(pod *v1.Pod, containerName string) (*v1.ContainerStatus
 
 	defer watcher.Stop()
 
-	for event := range watcher.ResultChan() {
-		pod, ok := event.Object.(*v1.Pod)
-		if !ok {
-			continue
-		}
-		for _, c := range pod.Status.ContainerStatuses {
-			if !c.Ready {
-				if c.State.Waiting != nil {
-					fmt.Printf("PodName: %s, Namespace: %s, Phase: %s WaitingReason: %s \n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace, pod.Status.Phase, c.State.Waiting.Reason)
+	for {
+		select {
+		case event := <-watcher.ResultChan():
+			pod, ok := event.Object.(*v1.Pod)
+			if !ok {
+				continue
+			}
+			for _, c := range pod.Status.ContainerStatuses {
+				if !c.Ready {
+					if c.State.Waiting != nil {
+						fmt.Printf("PodName: %s, Namespace: %s, Phase: %s WaitingReason: %s \n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace, pod.Status.Phase, c.State.Waiting.Reason)
+					}
 				}
-			}
-			if c.Name == containerName && c.Ready {
-				return &c, nil
-			}
+				if c.Name == containerName && c.Ready {
+					return &c, nil
+				}
 
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
+
 	}
 	return nil, err
 }
@@ -396,44 +429,32 @@ func CreatePod(ctx context.Context, namespace string, req *v1.Pod) (*v1.Pod, err
 		return nil, err
 	}
 
-	//status := resp.Status
-	//if w, err = cli.CoreV1().Pods(namespace).Watch(ctx, metav1.ListOptions{
-	//	Watch:           true,
-	//	ResourceVersion: resp.ResourceVersion,
-	//	FieldSelector:   fields.Set{"metadata.name": req.Name}.AsSelector().String(),
-	//	LabelSelector:   labels.Everything().String(),
-	//}); err != nil {
-	//	return resp, err
-	//}
-
-	//func() {
-	//	for {
-	//		select {
-	//		case events, ok := <-w.ResultChan():
-	//			if !ok {
-	//				return
-	//			}
-	//
-	//			resp, ok = events.Object.(*v1.Pod)
-	//			if !ok {
-	//				log.Printf("%+v", events.Type)
-	//				continue
-	//			}
-	//			fmt.Println("Pod status:", resp.Status.Phase)
-	//			status = resp.Status
-	//			if resp.Status.Phase != v1.PodPending {
-	//				w.Stop()
-	//			}
-	//		case <-ctx.Done():
-	//			fmt.Println("timeout to wait for pod active")
-	//			w.Stop()
-	//		}
-	//	}
-	//}()
-	//if status.Phase != v1.PodRunning {
-	//	return resp, fmt.Errorf("Pod is unavailable: %v", status.Phase)
-	//}
 	return resp, nil
+}
+
+func SetPodImage(namespace, podName, containerToUpdate, image string) (*v1.Pod, error) {
+	clientset, err := createClientSet()
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取 Pod
+	pod, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+	if err != nil {
+		panic(err)
+	}
+
+	// 找到你想要更新的容器，并更新其镜像
+	for i, container := range pod.Spec.Containers {
+		if container.Name == containerToUpdate {
+			pod.Spec.Containers[i].Image = image
+			break
+		}
+	}
+
+	// 更新 Pod
+	pod, err = clientset.CoreV1().Pods(namespace).Update(context.TODO(), pod, metav1.UpdateOptions{})
+	return pod, err
 }
 
 func ClientSet() (*kubernetes.Clientset, error) {
@@ -444,17 +465,155 @@ func RestConfig() (*rest.Config, error) {
 	return createRestConfig()
 }
 
+// replace client-go's Transport with *req.Transport
+func replaceTransport(config *rest.Config, t *req.Transport) {
+	// Extract tls.Config from rest.Config
+	tlsConfig, err := rest.TLSConfigFor(config)
+	if err != nil {
+		panic(err.Error())
+	}
+	// Set TLSClientConfig to req's Transport.
+	t.TLSClientConfig = tlsConfig
+	// Override with req's Transport.
+	config.Transport = t
+	// rest.Config.TLSClientConfig 必须为空，自定义的 Transport 不允许传证书，在 retryDialtls 中重建 tls.Config
+	config.TLSClientConfig = rest.TLSClientConfig{}
+}
+
 func createClientSet() (*kubernetes.Clientset, error) {
 	config, err := createRestConfig()
 	if err != nil {
 		return nil, err
 	}
-	//config.TransportConfig()
+
+	reqClient := req.NewClient()
+	reqClient.EnableDump(&req.DumpOptions{
+		RequestHeader:  true,
+		ResponseHeader: true,
+	})
+	reqClient.EnableDebugLog()
+
+	reqClient.Transport.SetDialTLS(retryDialtls(config.TLSClientConfig))
+	reqClient.Transport.SetDial(retryDial)
+	replaceTransport(config, reqClient.Transport)
+
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, err
 	}
 	return clientset, nil
+}
+
+// RetriableError is a custom error that contains a positive duration for the next retry
+type RetriableError struct {
+	Err        error
+	RetryAfter time.Duration
+}
+
+// Error returns error message and a Retry-After duration
+func (e *RetriableError) Error() string {
+	return fmt.Sprintf("%s (retry after %v)", e.Err.Error(), e.RetryAfter)
+}
+
+var _ error = (*RetriableError)(nil)
+
+// retryDialtls tls 连接重试
+func retryDialtls(cfg rest.TLSClientConfig) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var err error
+		var conn net.Conn
+		dialer := &net.Dialer{
+			Timeout: 10 * time.Second,
+		}
+
+		// 从 rest.TLSClientConfig 重建 tls 证书配置，用于建立 tls 连接
+		certPool, err := x509.SystemCertPool()
+		if cfg.CAData != nil {
+			certPool.AppendCertsFromPEM(cfg.CAData)
+		}
+		if cfg.CAFile != "" {
+			if caCertPEM, err := os.ReadFile(cfg.CAFile); err != nil {
+				log.Println("cafile error")
+			} else if ok := certPool.AppendCertsFromPEM(caCertPEM); !ok {
+				log.Println("invalid cert in CA PEM")
+			}
+		}
+
+		var cert tls.Certificate
+		if cfg.CertData != nil {
+			cert, err = tls.X509KeyPair(cfg.CertData, cfg.KeyData)
+			if err != nil {
+				log.Println("cert error")
+			}
+		}
+
+		if cfg.CertFile != "" {
+			cert, err = tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+			if err != nil {
+				log.Println("cert error")
+			}
+		}
+
+		err = goretry.Do(
+			func() error {
+				conn, err = tls.DialWithDialer(dialer, network, addr, &tls.Config{
+					RootCAs:      certPool,
+					Certificates: []tls.Certificate{cert},
+				})
+				if err != nil {
+					return &RetriableError{
+						Err:        err,
+						RetryAfter: time.Duration(3) * time.Second,
+					}
+				}
+				return nil
+			},
+			goretry.DelayType(func(n uint, err error, config *goretry.Config) time.Duration {
+				fmt.Println("Server fails with: "+err.Error(), n)
+				if retriable, ok := err.(*RetriableError); ok {
+					fmt.Printf("Client follows server recommendation to retry after %v\n", retriable.RetryAfter)
+					return retriable.RetryAfter
+				}
+				// apply a default exponential back off strategy
+				return goretry.BackOffDelay(n, err, config)
+			}),
+			goretry.Attempts(3), // 执行一次重试两次，共执行3次
+		)
+		return conn, err
+	}
+}
+
+// retryDial tcp 连接重试
+func retryDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	var err error
+	var conn net.Conn
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+	}
+
+	err = goretry.Do(
+		func() error {
+			conn, err = dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return &RetriableError{
+					Err:        err,
+					RetryAfter: time.Duration(3) * time.Second,
+				}
+			}
+			return nil
+		},
+		goretry.DelayType(func(n uint, err error, config *goretry.Config) time.Duration {
+			fmt.Println("Server fails with: "+err.Error(), n)
+			if retriable, ok := err.(*RetriableError); ok {
+				fmt.Printf("Client follows server recommendation to retry after %v\n", retriable.RetryAfter)
+				return retriable.RetryAfter
+			}
+			// apply a default exponential back off strategy
+			return goretry.BackOffDelay(n, err, config)
+		}),
+		goretry.Attempts(3), // 执行一次重试两次，共执行3次
+	)
+	return conn, err
 }
 
 func createRestConfig() (*rest.Config, error) {
@@ -479,5 +638,6 @@ func createRestConfig() (*rest.Config, error) {
 			return nil, err
 		}
 	}
+
 	return config, nil
 }
