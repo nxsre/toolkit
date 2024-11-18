@@ -1,7 +1,6 @@
 package k8sclient
 
 import (
-	"fmt"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/scheme"
 	"log/slog"
@@ -17,8 +16,8 @@ func main() {
 	restConfig.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
 	restConfig.APIPath = "/api"
 
-	clientset, _ := createClientSet()
+	//clientset, _ := createClientSet()
 
-	KubeCopy(clientset, restConfig, "default", "./daemonset.yaml",
-		fmt.Sprintf("%v:%v", "cph-test-20240119-004", "/data/local/tmp/cphnative-server-current.tgz"))
+	//KubeCopy(clientset, restConfig, "default", "./daemonset.yaml",
+	//	fmt.Sprintf("%v:%v", "cph-test-20240119-004", "/data/local/tmp/cphnative-server-current.tgz"))
 }
